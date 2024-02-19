@@ -1,0 +1,12 @@
+# Visual Studio 2015 cache/options directory
+.vs/
+*.ilk
+*.log
+*.tlog
+*.idb
+*.exe
+*.pdb
+*.obj
+*.i
+.vscode/
+.idea/
