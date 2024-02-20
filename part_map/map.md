@@ -104,3 +104,223 @@ type mapextra struct {
 
 这一段是map里面必须要弄懂的，后面扩容相关规则参考这篇博客 说得还挺清楚的
 https://blog.csdn.net/Peerless__/article/details/125458742
+
+### Go map的遍历为什么是无序的
+使用range多次遍历map的时候输出的key和value顺序有可能不同，这事Go语言的设计者们有意为之，旨在告诉开发者们，Go底层实现并不保证map遍历顺序稳定，请打架
+不要依赖range遍历结果顺序
+
+主要原因有两点：
+- map在遍历的时候并不是从固定的0号bucket开始遍历的，每次遍历都会从一个随机值序号的bucket，在从其中随机的cell开始遍历
+- map遍历时，是按序遍历bucket，同时按需遍历bucket中和其他overflow bucket中的cell。但是map在扩容后会发生key的搬迁，这造成原来落在一个bucket中的key，搬迁后，有可能落到其他bucket中了，从这个角度看遍历map的结果就不可能是按照原来的顺序了
+
+map本身是无序的，且遍历的时候顺序还会被随机化，如果想顺序遍历map，需要对map key 先排序，再按照key的顺序遍历map。
+
+### 为什么map不是线程安全的
+map默认是并发不安全的，同时对map进行并发读写，程序会出现panic
+
+Go官方在经过长时间讨论后认为map更适配典型使用场景，不需要从多个goroutine中进行安全访问，而不是为了小部分情况(并发访问)，导致大部分程序付出枷锁的代价(性能)，决定了不支持
+
+如果两个协程同时读写，会出现致命错误：fatal error: concurrent map writes
+
+**注意！** 这个fatal是不能被recover进行异常捕获的
+
+如果想要实现map的线程安全
+- 方法1：使用读写锁 --- map + sync.RWMutex
+
+```go
+package main
+
+import (
+	"fmt"
+	"sync"
+	"time"
+)
+
+func main() {
+	var lock sync.RWMutex
+	s := make(map[int]int)
+	for i := 0; i < 100; i++ {
+		go func(i int) {
+			lock.Lock()
+			s[i] = i
+			lock.Unlock()
+		}(i)
+	}
+
+	for i := 0; i < 100; i++ {
+		go func(i int) {
+			lock.RLock()
+			fmt.Printf("map 元素 %v    %v \n", i, s[i])
+			lock.RUnlock()
+		}(i)
+	}
+	time.Sleep(1 * time.Second)
+}
+```
+
+- 方法2 使用 Go提供的 sync.map
+```go
+package main
+
+import (
+	"fmt"
+	"sync"
+	"time"
+)
+
+func main() {
+	var m sync.Map
+	for i := 0; i < 100; i++ {
+		go func(i int) {
+			m.Store(i, i)
+		}(i)
+	}
+
+	for i := 0; i < 100; i++ {
+		go func(i int) {
+			v, ok := m.Load(i)
+			fmt.Printf("load: %v, %v", v, ok)
+		}(i)
+	}
+	time.Sleep(1 * time.Second)
+}
+```
+
+### Go map 如何查找
+Go语言中读取map有两种语法：带comma和不带comma，当要查询的key不在map里面，带comma的用法会返回一个bool型的变量提示key是否在map中，而不殆comma的语句则会返回一个value类型的零值。
+如果value是int就会返回0，如果value是string类型就会返回空字符串。
+
+```go
+// 不带 comma
+value := a["name"]
+fmt.Printf("value %s", value)
+
+// 带 comma
+value, ok := a["name"]
+```
+
+map的查找可以通过生成会变吗可以知道，根据key的不同类型/返回参数，编译器会将查找函数用具体的函数替换，优化效率
+![img_3.png](img_3.png)
+
+**查找流程**
+![img_4.png](img_4.png)
+
+1. 写保护检测
+
+函数首先会检查map的标志位flags，如果flags的写标志位此时被置为1了，说明有其他的协程正在进行写操作，进而导致程序panic，这也说明了map不是线程安全的
+
+![img_5.png](img_5.png)
+
+2. 计算hash值
+```go
+hash := t.hasher(key, uintptr(h.hash0))
+```
+key 经过哈希函数计算之后，得到的哈希值如下（主流64位机下共六十四个bit位） 不同类型的key会有不同搞得hash函数：
+
+10010111|000011110110110010001111001010100010010110010101010|01010
+
+3. 找到hash值对应的bucket
+
+bucket定位：哈希值的低B个bit位，用来定位key锁存放的bucket
+
+如果当前正在扩容中，并且定位到的旧的bucket数据还未完成迁移，就会使用就的bucket(扩容前的bucket)
+
+```go
+// 计算hash值
+hash := t.hasher(key, uintptr(h.hash0))
+// 桶的个数n-1，即 1 << B-1, B=5时，则有0-31号桶
+m := bucketMask(h.B)
+// 计算hash值对应的bucket
+// t.bucketsize 为一个bmap的大小，通过对哈希值和桶个数取模得到桶的编号，通过对桶编号和buckets其实地址进行运算，获取哈希值对应的bucket
+b := (*bmap)(add(h.buckets, (hash&m)*uintptr(t.bucketsize)))
+// 是否在扩容
+if c := h.oldbuckets; c != nil {
+	// 桶的个数已经发生增长，则就bucket的桶个数为当前桶个数的一半
+    if !h.sameSizeGrow() {
+        // There used to be half as many buckets; mask down one more power of two.
+        m >>= 1
+    }
+    // 计算哈希值对应的旧的bucket
+    oldb := (*bmap)(add(c, (hash&m)*uintptr(t.bucketsize)))
+    // 如果就的bucket数据还没有完成迁移，则使用旧的bucket查找
+    if !evacuated(oldb) {
+        b = oldb
+    }
+}
+top := tophash(hash)
+```
+
+4. 遍历bucket查找
+
+tophash值定位：哈希值的高八个bit位，用来快速判断key是否已经存在当前bucket中，如果不在的画则需要取bucket的overflow中查找
+
+用步骤2中的hash值得到高八个bit位，也就是10010111，转化为10进制也就是151
+```go
+top := tophash(hash)
+
+// tophash calculates the tophash value for hash.
+func tophash(hash uintptr) uint8 {
+    top := uint8(hash >> (goarch.PtrSize*8 - 8))
+    if top < minTopHash {
+        top += minTopHash
+    }
+    return top
+}
+```
+上面函数中的hash是六十四位的，但是sys.PtrSize 的值是8，所以 `top := uint8(hash >> (goarch.PtrSize*8 - 8))` 等同于 `top = uint8(hash >> 56)`
+最后top取出来的值就是hash的高八位值
+
+在bucket以及bucket的overflow中寻找tophash值（HOB hash）为151*的曹魏，即key所在的位置，如果找到空槽或者2号槽位，这样整个查找过程就结束了，其中空槽为代表没找到
+```go
+bucketloop:
+	for ; b != nil; b = b.overflow(t) {
+		for i := uintptr(0); i < bucketCnt; i++ {
+			if b.tophash[i] != top {
+				// 未使用的槽位，插入
+				if b.tophash[i] == emptyRest {
+					break bucketloop
+				}
+				continue
+			}
+			// 找到tophash值对应的key
+			k := add(unsafe.Pointer(b), dataOffset+i*uintptr(t.keysize))
+			if t.indirectkey() {
+				k = *((*unsafe.Pointer)(k))
+			}
+			if t.key.equal(key, k) {
+				e := add(unsafe.Pointer(b), dataOffset+bucketCnt*uintptr(t.keysize)+i*uintptr(t.elemsize))
+				if t.indirectelem() {
+					e = *((*unsafe.Pointer)(e))
+				}
+				return e
+			}
+		}
+	}
+```
+（这里顶格写的是标签，然后break + 标签 是跳出整个标签，相关的关键字用法还有goto 是跳转到标签段执行，这里可以取搜索下相关的资料）
+
+5. 返回keyh对应的指针
+
+如果上面的步骤找到了key对应的槽位下标i，我们再来看如何获取到key和value的
+
+```go
+dataOffset = unsafe.Offsetof(struct {
+    b bmap
+    v int64
+}{}.v)
+
+bucketCntBits = 3
+bucketCnt     = 1 << bucketCntBits
+
+// key 定位公式
+k := add(unsafe.Pointer(b), dataOffset+i*uintptr(t.keysize))
+
+// value elem 定位公式
+e := add(unsafe.Pointer(b), dataOffset+bucketCnt*uintptr(t.keysize)+i*uintptr(t.elemsize))
+```
+bucket里面keys的起始地址就是unsafe.Pointer(b)+dataOffset
+
+第i个下标key的地址就要在此基础上跨过i个key的大小；
+
+而我们还知道 value 的地址是在所有的key之后，因此第i个下表的value地址还要加上所有key的偏移
+
