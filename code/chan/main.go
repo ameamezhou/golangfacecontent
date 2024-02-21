@@ -2,11 +2,12 @@ package main
 
 import (
 	"fmt"
+	"sync"
 	"time"
 	"unsafe"
 )
 
-func main(){
+func main1(){
 	// ch 是长度为4的带缓冲的 channel
 	// 初始 hchan结构体中的buf为空，sendx和recvx均为0
 	ch := make(chan string, 4)
@@ -32,4 +33,31 @@ func receiveTask(ch chan string){
 		task := <- ch
 		fmt.Println("received: ", task)
 	}
+}
+
+var wg sync.WaitGroup
+
+func main(){
+	ch1 := make(chan struct{}, 1)
+	ch2 := make(chan struct{}, 1)
+	ch3 := make(chan struct{}, 1)
+	ch1 <- struct{}{}
+	wg.Add(3)
+	start := time.Now().Unix()
+	go outPut("goroutine1", ch1, ch2)
+	go outPut("goroutine2", ch2, ch3)
+	go outPut("goroutine3", ch3, ch1)
+	wg.Wait()
+	end := time.Now().Unix()
+	fmt.Printf("duration: %d \n", end - start)
+}
+
+func outPut(s string, inch, outch chan struct{}){
+	time.Sleep(1 * time.Second)
+	select {
+	case <- inch:
+		fmt.Printf("%s \n", s)
+		outch <- struct{}{}
+	}
+	wg.Done()
 }
