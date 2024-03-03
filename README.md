@@ -20,6 +20,8 @@ https://github.com/ameamezhou/go-data-structure
 简单来说
 1. bool
 2. 数字类型 uint int float32 float64 byte rune
+   - byte 等同于int8，常用来处理ascii字符
+   - rune 等同于int32,常用来处理unicode或utf-8字符
 3. 字符串类型
 4. 复合类型
     - 数组
@@ -64,7 +66,7 @@ func add (a, b int) int {
 - 使用指针类型可以避免在每次调用方法的时候复制该值，在值的类型为大型结构体时，这个做法会更高效
 
 ### Go函数返回局部变量的指针是否是安全的
-一般来说，局部变量会在函数返回后被销毁，因此被返回的引用就成了“无所指”的引用，陈旭会进入未知状态。
+一般来说，局部变量会在函数返回后被销毁，因此被返回的引用就成了“无所指”的引用，程序会进入未知状态。
 
 但这在Go中是安全的，Go编译器将会对每个局部变量进行逃逸分析.如果发现局部变量的作用域超出该函数，则不会将内存分配在栈上，而是分配在堆上，因为他们不在栈区，所以即使释放函数，其内容也不会受影响
 
@@ -102,7 +104,7 @@ Go语言中所有的传参都是值传递，都是一个副本一个拷贝
 
 引用类型和引用传递是两个概念
 - 值传递: 将实际参数的值传递给形参，形式参数是实际参数的一份拷贝，实际参数和形式参数的内存地址不同。函数内堆形式参数值的内容进行修改，至于是否影响实际参数的值的内容，取决于参数是否是引用类型
-- 引用传递: 将实际参数的地址传递给形式参数，函数内堆形式参数内容的修改，将会影响实际参数的值的内容。GO语言中是没有引用传递的，在c++中函数参数的传递方式又引用传递。
+- 引用传递: 将实际参数的地址传递给形式参数，函数内对形式参数内容的修改，将会影响实际参数的值的内容。GO语言中是没有引用传递的，在c++中函数参数的传递方式又引用传递。
 
 **int 类型**
 ```go
@@ -159,7 +161,7 @@ map 形式参数和实际参数内存地址不同，所以其实还是值传递
 
 ![img_3.png](./基础篇/img_3.png)
 
-因为通过make创建的chan本质也是一个hchan类型的指针，所以堆形参的修改会修改原内容数据
+因为通过make创建的chan本质也是一个hchan类型的指针，所以对形参的修改会修改原内容数据
 
 **struct**
 形参和实际参数内存地址不一样  是值传递，只要内部的元素不是指针类型的  函数内对形参的修改就不会修改原来的内容数据
@@ -278,6 +280,66 @@ func make(t Type, size ...IntegerType) Type
 ```go
 func new(Type) *Type
 ```
+
+### interface 的底层实现原理
+golang 钟的接口分为带方法的接口和空接口。带方法的接口在底层用 iface(说白了就是一个结构体  在底层代码里定义) 表示，空接口的底层则是 eface 表示。
+
+```go
+//runtime/runtime2.go
+
+//非空接口
+type iface struct {
+	tab  *itab
+	data unsafe.Pointer //data是指向真实数据的指针
+}
+type itab struct {
+	inter  *interfacetype //描述接口自己的类型
+	_type  *_type         //接口内部存储的具体数据的真实类型
+	link   *itab
+	hash   uint32 // copy of _type.hash. Used for type switches.
+	bad    bool   // type does not implement interface
+	inhash bool   // has this itab been added to hash?
+	unused [2]byte
+	fun    [1]uintptr // fun是指向方法集的指针。它用于动态调度。
+}
+
+// 空接口
+type eface struct {
+    _type *_type
+    data  unsafe.Pointer
+}
+
+//runtime/type.go
+type _type struct {
+	size       uintptr
+	ptrdata    uintptr // size of memory prefix holding all pointers
+	hash       uint32
+	tflag      tflag
+	align      uint8
+	fieldalign uint8
+	kind       uint8
+	alg        *typeAlg
+	// gcdata stores the GC type data for the garbage collector.
+	// If the KindGCProg bit is set in kind, gcdata is a GC program.
+	// Otherwise it is a ptrmask bitmap. See mbitmap.go for details.
+	gcdata    *byte
+	str       nameOff
+	ptrToThis typeOff
+}
+```
+1. iface
+    - hash 是对 _type.hash 的拷贝，当我们想将 interface 类型转换成具体类型时，可以使用该字段快速判断目标类型和具体类型 runtime._type 是否一致；
+    - fun 是一个动态大小的数组，它是一个用于动态派发的虚函数表，存储了一组函数指针。虽然该变量被声明成大小固定的数组，但是在使用时会通过原始指针获取其中的数据；
+
+![img.png](img/img.png)    
+
+2. eface: eface顾名思义就是empty interface，代表的是不包含方法的interface，例如： type Test interface{}
+   - _type：这个是运行时 runtime._type 指针类型，表示数据类型
+   - data: 表示的数据指针
+
+![img_1.png](img/img_1.png)
+
+
 
 ## slice head
 slice的具体原理已经在golang数据结构那个仓库有总结了，这里再梳理一边
@@ -1038,7 +1100,7 @@ Go中的channel是一个队列，遵循先进先出的原则，分则协程之�
 
 源码中 src/runtime/chan.go 定义了 hchan 的数据结构:
 
-![img.png](img.png)
+![img.png](img/img.png)
 
 ```go
 type hchan struct {
