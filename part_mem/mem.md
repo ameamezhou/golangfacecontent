@@ -111,7 +111,7 @@ type mheap struct {
 所有 mcentral 的集合则是存放于 mheap 中的。 mheap 里的 arens 区域是堆内存的抽象，运行时会将 8kb 看作一页，这些内存页中存储了所有在堆上初始化的对象。
 运行时使用二维的 runtime.heapArena 数组管理所有的内存，每个 runtime.heapArena 都会管理64MB的内存。
 
-当申请内存时，依次 金国 mcache 和 mcentral 都没有合适规格的大小就会向mheap 申请一个块内存，然后按照指定规格划分为列表，并添加到相同规格大小的 mcentral 的非空闲列表后面
+当申请内存时，依次 经过 mcache 和 mcentral 都没有合适规格的大小就会向mheap 申请一个块内存，然后按照指定规格划分为列表，并添加到相同规格大小的 mcentral 的非空闲列表后面
 
 **分配对象**
 
