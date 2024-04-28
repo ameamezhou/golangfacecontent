@@ -12,13 +12,13 @@ import (
 
 var Wait = sync.WaitGroup{}
 
-func main()  {
+func main2()  {
 	t := time.Now()
 	ctx, cancel := context.WithCancel(context.Background())
 	Wait.Add(1)
 	go func() {
 		// Wait.Done()
-		ip, err := GetIp(ctx)
+		ip, err := GetIp1(ctx)
 		if err != nil {
 			fmt.Println(err)
 			return
@@ -34,7 +34,7 @@ func main()  {
 	fmt.Println("执行结束:", time.Since(t))
 }
 
-func GetIp(ctx context.Context)(ip string, err error){
+func GetIp1(ctx context.Context)(ip string, err error){
 	go func() {
 		select {
 		case <- ctx.Done():

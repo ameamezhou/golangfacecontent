@@ -254,6 +254,182 @@ Recover是在defer中的，它只能捕获自身协程内的异常，不能跨�
 
 然后recover并不是所有的错误都能获取到，它只能获取一些panic，更严重的fatal是不能被获取的。比如map是一个非线程安全的map，不能直接进行并发写，会触发fatal，这个是不能被recover捕获的
 
+### context
+在Go语言中，context是一个非常重要的概念，它用于在不同的goroutine之间传递请求域的相关数据，并且可以用来控制goroutine的生命周期和取消操作。
+
+```go
+type Context interface {
+	Deadline() (deadline time.Time, ok bool)
+	Done() <-chan struct{}
+	Err() error
+	Value(key any) any
+}
+```
+- Deadline() 方法用于获取 Context 的截止时间
+- Done() 方法用于返回一个只读的 channel，用于通知当前的 Context 是否已经被取消。
+- Err() 方法用于获取 Context 取消的原因
+- Value() 方法用于获取 Context 中保存的键值对数据
+
+#### 用法1 数据传输
+```go
+package main
+
+import (
+	"context"
+	"fmt"
+)
+
+type UserInfo struct {
+	Name 	string
+	Age 	int
+}
+
+func GetUser(ctx context.Context){
+	fmt.Println(ctx.Value("info").(UserInfo).Name) // 可以使用断言转化类型的
+}
+
+func main(){
+	ctx := context.Background()
+	ctx = context.WithValue(ctx, "info", UserInfo{Name: "xiaoqizhou", Age: 18})
+	GetUser(ctx)
+}
+```
+
+#### 用法2 取消协程 WithCancel
+
+很常见的一个案例，假设有一个获取ip的协程，但是这是一个非常耗时的操作每用户随时可能会取消
+
+如果用户取消了，那么之前那个获取协程的函数就要停止了
+
+```go
+package main
+
+import (
+	"context"
+	"fmt"
+	"sync"
+	"time"
+)
+
+var Wait = sync.WaitGroup{}
+
+func main()  {
+	t := time.Now()
+	ctx, cancel := context.WithCancel(context.Background())
+	Wait.Add(1)
+	go func() {
+		// Wait.Done()
+		ip, err := GetIp(ctx)
+		if err != nil {
+			fmt.Println(err)
+			return
+		}
+		fmt.Println(ip, err)
+	}()
+	go func() {
+		time.Sleep(2*time.Second)
+		// 取消协程
+		cancel()
+	}()
+	Wait.Wait()
+	fmt.Println("执行结束:", time.Since(t))
+}
+
+func GetIp(ctx context.Context)(ip string, err error){
+	go func() {
+		select {
+		case <- ctx.Done():
+			fmt.Println("协程取消", ctx.Err())
+			err = ctx.Err()
+			Wait.Done()
+			return
+		}
+	}()
+	defer Wait.Done()
+	time.Sleep(4*time.Second)
+
+	ip = "192.16.8.0.1"
+
+	return
+}
+```
+
+#### 截止时间 WithDeadline
+
+除了使用 WithCancel() 方法取消协程之外，Context 还可以被用来设置截止时间，以使在超时的情况下取消请求
+
+还是上面那个案例
+
+```go
+package main
+
+import (
+	"context"
+	"fmt"
+	"sync"
+	"time"
+)
+
+func main(){
+	var wg = sync.WaitGroup{}
+
+	ctx1, _ := context.WithDeadline(context.Background(), time.Now().Add(5*time.Second))
+	wg.Add(1)
+	go GetIp(ctx1, &wg)
+	wg.Wait()
+}
+
+func GetIp(ctx context.Context, wg *sync.WaitGroup)(ip string, err error){
+	go func() {
+		select {
+		case <- ctx.Done():
+			fmt.Println("协程取消", ctx.Err())
+			err = ctx.Err()
+			wg.Done()
+			return
+		}
+	}()
+	defer wg.Done()
+	time.Sleep(7*time.Second)
+
+	ip = "192.16.8.0.1"
+
+	return
+}
+```
+
+#### 超时时间  WithTimeout
+
+用法大差不差  也是可以手动取消的
+
+```go
+package main
+
+import (
+	"context"
+	"fmt"
+	"time"
+)
+
+func main(){
+	ctx, _ := context.WithTimeout(context.Background(), 5*time.Second)
+
+	go GetIp3(ctx)
+	// 手动结束进程
+	time.Sleep(5*time.Second)
+	// 模拟线程阻塞
+	time.Sleep(1*time.Second)
+}
+
+func GetIp3(ctx context.Context){
+	fmt.Println("获取IP")
+	select {
+		case <- ctx.Done():
+			fmt.Println("协程取消", ctx.Err())
+	}
+}
+```
+
 ### new 和 make 的区别
 纠正一下，make和new是内置函数，不是关键字
 
